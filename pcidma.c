@@ -142,6 +142,7 @@ static long pcidma_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 }
 
 static const struct file_operations pcidma_fops = {
+	.owner		= THIS_MODULE,
 	.release	= pcidma_release,
 	.unlocked_ioctl	= pcidma_ioctl,
 };
