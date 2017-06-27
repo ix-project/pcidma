@@ -26,103 +26,48 @@
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("control bus master (DMA) for PCI devices");
 
-static DEFINE_SPINLOCK(pci_register_lock);
+static DEFINE_SPINLOCK(devices_lock);
 
-static int pci_registered;
+#define MAX_DEVICES 8
 
-static int pcidma_probe(struct pci_dev *dev, const struct pci_device_id *id)
-{
-	/* This driver responds always negatively to probe requests */
-	return -EINVAL;
-}
-
-static void pcidma_remove(struct pci_dev *dev)
-{
-	pci_clear_master(dev);
-
-	dev_info(&dev->dev, "released\n");
-}
-
-static struct pci_driver pcidma_driver = {
-	.name		= "pcidma",
-	.id_table	= NULL,
-	.probe		= pcidma_probe,
-	.remove		= pcidma_remove,
-};
-
-static int pci_register(void)
-{
-	int ret;
-
-	ret = 0;
-	spin_lock(&pci_register_lock);
-	if (!pci_registered)
-		ret = pci_register_driver(&pcidma_driver);
-	if (!ret)
-		pci_registered = 1;
-	spin_unlock(&pci_register_lock);
-	return ret;
-}
-
-static void pci_unregister(void)
-{
-	spin_lock(&pci_register_lock);
-	if (pci_registered)
-		pci_unregister_driver(&pcidma_driver);
-	pci_registered = 0;
-	spin_unlock(&pci_register_lock);
-}
+static struct pci_dev *enabled_device[MAX_DEVICES];
+static int nr_devices;
 
 static int pcidma_enable(struct args_enable *args)
 {
-	int ret;
 	struct pci_loc *loc;
 	unsigned int devfn;
 	struct pci_dev *dev;
 
-	ret = pci_register();
-	if (ret)
-		return ret;
+	if (nr_devices >= MAX_DEVICES)
+		return -EBUSY;
 
 	loc = &args->pci_loc;
 
 	devfn = PCI_DEVFN(loc->slot, loc->func);
 	dev = pci_get_domain_bus_and_slot(loc->domain, loc->bus, devfn);
-	if (!dev) {
-		ret = -EINVAL;
-		goto out_unregister;
-	}
-
-	if (dev->dev.driver) {
-		ret = -EBUSY;
-		goto out_unregister;
-	}
-
-	dev->driver = &pcidma_driver;
-	dev->dev.driver = &pcidma_driver.driver;
-
-	if (device_attach(&dev->dev) <= 0) {
-		dev->driver = NULL;
-		dev->dev.driver = NULL;
-		ret = -EINVAL;
-		goto out_unregister;
-	}
+	if (!dev)
+		return -EINVAL;
 
 	pci_set_master(dev);
 
-	dev_info(&dev->dev, "claimed\n");
+	spin_lock(&devices_lock);
+	enabled_device[nr_devices++] = dev;
+	spin_unlock(&devices_lock);
 
 	return 0;
-
-out_unregister:
-	pci_unregister();
-
-	return ret;
 }
 
 static int pcidma_release(struct inode *inode, struct file *file)
 {
-	pci_unregister();
+	int i;
+
+	spin_lock(&devices_lock);
+	for (i = 0; i < nr_devices; i++)
+		pci_clear_master(enabled_device[i]);
+	nr_devices = 0;
+	spin_unlock(&devices_lock);
+
 	return 0;
 }
 
@@ -161,7 +106,6 @@ static int __init pcidma_init(void)
 static void __exit pcidma_exit(void)
 {
 	misc_deregister(&pcidma_dev);
-	pci_unregister();
 }
 
 module_init(pcidma_init);
